@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -22,21 +23,25 @@ func (h *appHandler) sseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientID := time.Now().UnixNano()
+	userId, err := strconv.ParseInt(r.Header.Get("X-User-Id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
 
-	log.Printf("client connected: %d\n", clientID)
+	log.Printf("user connected: %d\n", userId)
 
-	ch := make(chan string)
-	h.sse.addClient(clientID, ch)
-	defer h.sse.removeClient(clientID)
+	ch := make(chan []byte)
+	h.sse.addUserChan(userId, ch)
+	defer h.sse.removeUserChan(userId, ch)
 
 	for {
 		select {
 		case <-r.Context().Done():
-			log.Printf("client disconnected: %d\n", clientID)
+			log.Printf("client disconnected: %d\n", userId)
 			return
 		case m := <-ch:
-			log.Printf("sending message to client: %d\n", clientID)
+			log.Printf("sending message to user: %d\n", userId)
 			fmt.Fprintf(w, "data: %s\n\n", m)
 			flusher.Flush()
 		}
@@ -46,8 +51,8 @@ func (h *appHandler) sseHandler(w http.ResponseWriter, r *http.Request) {
 func startWorker(s *sseBroker) {
 	go func() {
 		for {
-			for _, id := range s.clientIDs() {
-				s.clients[id] <- fmt.Sprintf("current time is %v", time.Now().Unix())
+			for _, id := range s.userIDs() {
+				s.sendToUser(id, []byte(fmt.Sprintf("current time is %v", time.Now().Unix())))
 			}
 			time.Sleep(2 * time.Second)
 		}
@@ -56,9 +61,7 @@ func startWorker(s *sseBroker) {
 
 func main() {
 
-	sse := &sseBroker{
-		clients: make(map[int64]chan string),
-	}
+	sse := newSSEBroker()
 
 	startWorker(sse)
 
